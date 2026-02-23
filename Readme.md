@@ -40,6 +40,17 @@ source venv/bin/activate
 python app.py
 ```
 
+### Optional: run.sh (Linux/macOS)
+
+A `run.sh` script is included for convenience. It sets up the virtual environment on first run, then starts the app and opens your browser automatically each time.
+
+```bash
+chmod +x run.sh   # once, to make it executable
+./run.sh
+```
+
+You can also double-click it in a file manager if it's configured to run shell scripts.
+
 ---
 
 ## Connecting to Jellyfin
