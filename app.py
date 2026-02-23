@@ -379,12 +379,12 @@ def run_export(job_id, selected_ids, output_dir, fmt="wav", auto_ids=None):
     def album_sort_key(aid):
         a = next((x for x in state["albums"] if x["Id"] == aid), None)
         if not a:
-            return "9999"
+            return "9999-01-01"
         premiere = a.get("PremiereDate")  # ISO 8601, e.g. "1991-09-24T00:00:00Z"
         if premiere:
-            return premiere
+            return premiere[:10]  # "YYYY-MM-DD" — comparable with year-padded fallback
         year = a.get("ProductionYear")
-        return str(year) if year else "9999"
+        return f"{year}-01-01" if year else "9999-01-01"
 
     selected_ids = sorted(selected_ids, key=album_sort_key)
     total = len(selected_ids)
@@ -481,7 +481,8 @@ def run_export(job_id, selected_ids, output_dir, fmt="wav", auto_ids=None):
             album_name = safe_name(album.get("Name", album_id))
             album_artist = safe_name(album.get("AlbumArtist") or
                                (album.get("AlbumArtists") or [{}])[0].get("Name", "") or "Unknown")
-            album_year_val = album.get("ProductionYear") or "unknown"
+            premiere = album.get("PremiereDate", "")
+            album_year_val = album.get("ProductionYear") or (premiere[:4] if premiere else None) or "unknown"
             out_filename = f"{idx-1:02d}-{album_artist}-({album_year_val})-{album_name}.{fmt}"
             out_path = os.path.join(output_dir, out_filename)
 
