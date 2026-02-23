@@ -72,7 +72,7 @@ def fetch_all_albums():
             params={
                 "IncludeItemTypes": "MusicAlbum",
                 "Recursive": "true",
-                "Fields": "Overview,Genres,ProductionYear,ChildCount,CumulativeRunTimeTicks,UserData",
+                "Fields": "Overview,Genres,ProductionYear,PremiereDate,ChildCount,CumulativeRunTimeTicks,UserData",
                 "StartIndex": start,
                 "Limit": limit,
                 "SortBy": "SortName",
@@ -375,18 +375,24 @@ def run_export(job_id, selected_ids, output_dir, fmt="wav", auto_ids=None):
     os.makedirs(output_dir, exist_ok=True)
     tmp_base = tempfile.mkdtemp(prefix="jf_export_")
 
-    # ── Sort selected albums by release year (oldest first = track 1) ──────
-    def album_year(aid):
+    # ── Sort selected albums by release date (oldest first = track 1) ──────
+    def album_sort_key(aid):
         a = next((x for x in state["albums"] if x["Id"] == aid), None)
-        return a.get("ProductionYear") or 9999 if a else 9999
+        if not a:
+            return "9999"
+        premiere = a.get("PremiereDate")  # ISO 8601, e.g. "1991-09-24T00:00:00Z"
+        if premiere:
+            return premiere
+        year = a.get("ProductionYear")
+        return str(year) if year else "9999"
 
-    selected_ids = sorted(selected_ids, key=album_year)
+    selected_ids = sorted(selected_ids, key=album_sort_key)
     total = len(selected_ids)
     job["total"] = total
 
     job["log"].append(f"🚀 Exporting {total} albums as {fmt.upper()}  |  {DL_WORKERS} dl workers  |  {CPU_CORES} convert cores")
     job["log"].append(f"📁 Output: {output_dir}")
-    job["log"].append(f"📅 Sorted oldest → newest by release year")
+    job["log"].append(f"📅 Sorted oldest → newest by release date")
 
     # Write playlist immediately — captures exactly what was requested,
     # regardless of whether individual downloads succeed or fail later.
