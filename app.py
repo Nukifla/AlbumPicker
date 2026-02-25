@@ -226,19 +226,19 @@ CPU_CORES = max(1, (_os.cpu_count() or 4))
 # How many tracks to download simultaneously (per album)
 DL_WORKERS = 8
 
-def convert_track(src, out_path, fmt, job, wi, total):
+def convert_track(src, out_path, fmt, job, wi, total, normalize=False):
     """Convert a single downloaded track to normalised PCM WAV or CBR MP3."""
     if os.path.exists(out_path):
         return True
     job["track_status"] = f"🔄 Converting {wi}/{total}: {os.path.basename(src)}"
+    af = ["-af", "loudnorm=I=-14:TP=-1:LRA=11"] if normalize else []
     if fmt == "mp3":
         cmd = ["ffmpeg", "-y", "-i", src, "-vn",
                "-ar", "44100", "-ac", "2",
-               "-c:a", "libmp3lame", "-b:a", "320k", "-q:a", "0",
-               out_path]
+               "-c:a", "libmp3lame", "-b:a", "320k", "-q:a", "0"] + af + [out_path]
     else:
         cmd = ["ffmpeg", "-y", "-i", src, "-vn",
-               "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", out_path]
+               "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2"] + af + [out_path]
     conv = subprocess.run(cmd, capture_output=True, text=True)
     if conv.returncode != 0:
         job["log"].append(f"  ✗ Convert failed track {wi}: {conv.stderr[-200:]}")
@@ -365,7 +365,7 @@ def process_album(idx, total, album_id, output_dir, tmp_base, job):
     return True
 
 
-def run_export(job_id, selected_ids, output_dir, fmt="wav", auto_ids=None):
+def run_export(job_id, selected_ids, output_dir, fmt="wav", auto_ids=None, normalize=False):
     auto_ids = set(auto_ids or [])
     job = state["jobs"][job_id]
     job["status"] = "running"
@@ -390,7 +390,8 @@ def run_export(job_id, selected_ids, output_dir, fmt="wav", auto_ids=None):
     total = len(selected_ids)
     job["total"] = total
 
-    job["log"].append(f"🚀 Exporting {total} albums as {fmt.upper()}  |  {DL_WORKERS} dl workers  |  {CPU_CORES} convert cores")
+    norm_label = "normalize: ON (album-level)" if normalize else "normalize: OFF"
+    job["log"].append(f"🚀 Exporting {total} albums as {fmt.upper()}  |  {DL_WORKERS} dl workers  |  {CPU_CORES} convert cores  |  {norm_label}")
     job["log"].append(f"📁 Output: {output_dir}")
     job["log"].append(f"📅 Sorted oldest → newest by release date")
 
@@ -522,7 +523,7 @@ def run_export(job_id, selected_ids, output_dir, fmt="wav", auto_ids=None):
 
             def conv_one(wi, src, total_tracks, od=out_dir, f=fmt):
                 out_p = os.path.join(od, f"{wi:03d}.{f}")
-                ok = convert_track(src, out_p, f, job, wi, total_tracks)
+                ok = convert_track(src, out_p, f, job, wi, total_tracks, normalize=False)
                 return wi, out_p if ok else None
 
             with ThreadPoolExecutor(max_workers=CPU_CORES) as pool:
@@ -571,6 +572,27 @@ def run_export(job_id, selected_ids, output_dir, fmt="wav", auto_ids=None):
 
             if not merge_ok:
                 continue
+
+            if normalize:
+                job["log"].append(f"  🔊 Normalizing album…")
+                norm_tmp = out_path + ".norm_tmp"
+                if fmt == "mp3":
+                    norm_cmd = ["ffmpeg", "-y", "-i", out_path,
+                                "-af", "loudnorm=I=-14:TP=-1:LRA=11",
+                                "-c:a", "libmp3lame", "-b:a", "320k", "-q:a", "0",
+                                norm_tmp]
+                else:
+                    norm_cmd = ["ffmpeg", "-y", "-i", out_path,
+                                "-af", "loudnorm=I=-14:TP=-1:LRA=11",
+                                "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
+                                norm_tmp]
+                norm_result = subprocess.run(norm_cmd, capture_output=True, text=True)
+                if norm_result.returncode == 0:
+                    os.replace(norm_tmp, out_path)
+                else:
+                    job["log"].append(f"  ⚠ Normalization failed, keeping unnormalized: {norm_result.stderr[-200:]}")
+                    if os.path.exists(norm_tmp):
+                        os.remove(norm_tmp)
 
             probe = subprocess.run(
                 ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", out_path],
@@ -674,6 +696,7 @@ def api_export():
     fmt = d.get("format", "wav")  # "wav" or "mp3"
     if fmt not in ("wav", "mp3"):
         fmt = "wav"
+    normalize = bool(d.get("normalize", False))
     if not selected:
         return jsonify({"ok": False, "error": "No albums selected"})
     if not output_dir:
@@ -689,7 +712,7 @@ def api_export():
         "completed_files": [],   # filenames ready to fetch
         "log": [f"🚀 Starting export of {len(selected)} albums to: {output_dir}"],
     }
-    t = threading.Thread(target=run_export, args=(job_id, selected, output_dir, fmt, auto_ids), daemon=True)
+    t = threading.Thread(target=run_export, args=(job_id, selected, output_dir, fmt, auto_ids, normalize), daemon=True)
     t.start()
     return jsonify({"ok": True, "job_id": job_id})
 
@@ -1436,6 +1459,13 @@ HTML = r"""
           <button id="fmt-mp3" class="active" onclick="setFmt('mp3')" style="flex:1;width:50%;">MP3 320k</button>
         </div>
       </div>
+      <!-- Normalize toggle -->
+      <div style="display:flex;gap:6px;margin-bottom:6px;">
+        <button id="btn-normalize" onclick="toggleNormalize()" class="secondary"
+          style="flex:1;" title="EBU R128 loudness normalization · -14 LUFS">
+          🔇 Normalize: OFF
+        </button>
+      </div>
       <div style="display:flex;gap:6px;">
         <button onclick="startExport()" id="btn-export" style="flex:1;">Export MP3 →</button>
         <button onclick="openImportModal()" class="secondary" style="flex:0 0 auto;padding:8px 10px;" title="Import playlist.json">⬆ Import</button>
@@ -1554,6 +1584,14 @@ let selected = [];     // manually picked album ids (ordered)
 let autoSelected = []; // auto-filled ids (separate, teal)
 let currentView = 'grid'; // 'grid' | 'genre'
 let exportFmt = 'mp3';    // 'wav' | 'mp3'
+let normalizeAudio = false;
+
+function toggleNormalize() {
+  normalizeAudio = !normalizeAudio;
+  const btn = document.getElementById('btn-normalize');
+  btn.textContent = normalizeAudio ? '🔊 Normalize: ON' : '🔇 Normalize: OFF';
+  btn.className = normalizeAudio ? 'active' : 'secondary';
+}
 let currentJobId = null;
 let pollTimer = null;
 let dragSrcIdx = null;
@@ -2007,7 +2045,8 @@ async function startExport() {
       selected: allIds,
       auto_ids: autoSelected,   // so backend can tag each album in playlist.json
       output_dir: outdir,
-      format: exportFmt
+      format: exportFmt,
+      normalize: normalizeAudio
     })
   });
   const d = await r.json();
